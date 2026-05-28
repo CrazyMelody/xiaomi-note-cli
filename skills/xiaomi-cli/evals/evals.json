@@ -1,0 +1,23 @@
+{
+  "skill_name": "xiaomi-cli",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "用当前仓库里的 CLI 创建一条待办，内容是“10 分钟后提醒我提交周报”，提醒时间用相对时间表达。",
+      "expected_output": "使用 `uv run xiaomi-cli todo create`，并传入 `--remind-in '10分钟后'` 或等价短格式，同时说明创建结果里的记录 ID。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "帮我把一条已有的小米待办改成 1 天后提醒，要求继续用 CLI，不要走浏览器页面。",
+      "expected_output": "使用 `uv run xiaomi-cli todo update`，带上 `--remind-in '1天后'` 或等价短格式，并提醒用户需要当前 eTag。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "列出当前所有小米云笔记，并告诉我如果我接下来要删除其中一条，需要先拿到什么字段。",
+      "expected_output": "使用 `uv run xiaomi-cli note list`，并说明删除前需要最新的 `tag`。",
+      "files": []
+    }
+  ]
+}
