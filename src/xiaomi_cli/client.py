@@ -20,6 +20,14 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36"
 )
+AUTH_COOKIE_NAMES = (
+    "serviceToken",
+    "i.mi.com_slh",
+    "i.mi.com_ph",
+    "userId",
+    "i.mi.com_isvalid_servicetoken",
+    "i.mi.com_istrudev",
+)
 
 
 class XiaomiApiError(RuntimeError):
@@ -62,8 +70,36 @@ class XiaomiClient:
     def save_cookie_file(self, output: Path) -> Path:
         """Write the raw cookie header into a plain-text file."""
 
-        output.write_text(self.auth.cookie.strip() + "\n", encoding="utf-8")
+        output.write_text(self.current_cookie_header().strip() + "\n", encoding="utf-8")
         return output
+
+    def current_cookie_header(self) -> str:
+        """Build the current effective Cookie header from the client jar.
+
+        Returns:
+            De-duplicated cookie header text suitable for future CLI reuse.
+        """
+
+        cookies_by_name = self._effective_cookies_by_name()
+        ordered_names = [name for name in AUTH_COOKIE_NAMES if name in cookies_by_name]
+        ordered_names.extend(sorted(name for name in cookies_by_name if name not in AUTH_COOKIE_NAMES))
+        return "; ".join(f"{name}={cookies_by_name[name].value}" for name in ordered_names)
+
+    def refresh_auth(self, sync_tag: str | None = None) -> tuple[str, str | None]:
+        """Refresh Xiaomi web auth cookies through the note sync endpoint.
+
+        Args:
+            sync_tag: Optional sync tag reused from the previous refresh result.
+
+        Returns:
+            Tuple of ``(cookie_header, next_sync_tag)`` after de-duplication.
+        """
+
+        payload = self.note_sync(sync_tag)
+        self._dedupe_auth_cookies()
+        cookie_header = self.current_cookie_header()
+        self.auth.cookie = cookie_header
+        return cookie_header, self._extract_note_sync_tag(payload)
 
     def get(self, path: str, query: dict[str, Any] | None = None) -> Any:
         """Send a Xiaomi-style GET request.
@@ -95,7 +131,7 @@ class XiaomiClient:
 
         form = dict(body or {})
         if "serviceToken" not in form:
-            token = self._client.cookies.get("serviceToken")
+            token = self._effective_cookie_value("serviceToken")
             if token:
                 form["serviceToken"] = token
         encoded_form = self._flatten_form(form)
@@ -215,6 +251,90 @@ class XiaomiClient:
                 f"小米接口返回错误: code={payload.code}, result={payload.result}, description={payload.description}"
             )
         return payload.data
+
+    def _effective_cookie_value(self, name: str) -> str | None:
+        """Resolve one cookie value from the current jar without name conflicts.
+
+        Args:
+            name: Cookie name to resolve.
+
+        Returns:
+            Preferred cookie value, or ``None`` when missing.
+        """
+
+        cookie = self._effective_cookies_by_name().get(name)
+        return cookie.value if cookie is not None else None
+
+    def _effective_cookies_by_name(self) -> dict[str, Any]:
+        """Choose one effective cookie per name from the current jar.
+
+        Returns:
+            Mapping from cookie name to the preferred cookie object.
+        """
+
+        selected: dict[str, Any] = {}
+        for cookie in self._client.cookies.jar:
+            current = selected.get(cookie.name)
+            if current is None or self._cookie_priority(cookie) >= self._cookie_priority(current):
+                selected[cookie.name] = cookie
+        return selected
+
+    def _dedupe_auth_cookies(self) -> None:
+        """Remove stale duplicate auth cookies after the server rotates them.
+
+        Side effects:
+            Mutates the underlying cookie jar in place.
+        """
+
+        preferred = self._effective_cookies_by_name()
+        removable: list[tuple[str, str, str]] = []
+        for cookie in list(self._client.cookies.jar):
+            if cookie.name not in AUTH_COOKIE_NAMES:
+                continue
+            target = preferred.get(cookie.name)
+            if target is None:
+                continue
+            if (cookie.domain, cookie.path, cookie.value) != (target.domain, target.path, target.value):
+                removable.append((cookie.domain, cookie.path, cookie.name))
+        for domain, path, name in removable:
+            self._client.cookies.jar.clear(domain, path, name)
+
+    @staticmethod
+    def _cookie_priority(cookie: Any) -> tuple[int, int, int]:
+        """Score one cookie candidate so auth helpers can pick the best one.
+
+        Args:
+            cookie: Cookie object from the underlying ``http.cookiejar`` jar.
+
+        Returns:
+            Comparable priority tuple, preferring scoped cookies over raw input ones.
+        """
+
+        domain = cookie.domain or ""
+        path = cookie.path or "/"
+        return (1 if domain else 0, len(domain.lstrip(".")), len(path))
+
+    @staticmethod
+    def _extract_note_sync_tag(payload: Any) -> str | None:
+        """Read the next sync tag from a note sync response payload.
+
+        Args:
+            payload: Decoded payload returned by ``note_sync``.
+
+        Returns:
+            Sync tag string when present, else ``None``.
+        """
+
+        if not isinstance(payload, dict):
+            return None
+        note_view = payload.get("note_view")
+        if not isinstance(note_view, dict):
+            return None
+        data = note_view.get("data")
+        if not isinstance(data, dict):
+            return None
+        sync_tag = data.get("syncTag")
+        return str(sync_tag) if sync_tag is not None else None
 
     @staticmethod
     def _parse_cookie_header(cookie_header: str) -> dict[str, str]:

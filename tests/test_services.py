@@ -6,6 +6,8 @@ from datetime import datetime
 import json
 from zoneinfo import ZoneInfo
 
+from xiaomi_cli.client import XiaomiClient
+from xiaomi_cli.config import AuthConfig
 from xiaomi_cli.models import ReminderRepeatType
 from xiaomi_cli.services import (
     build_note_create_entry,
@@ -137,3 +139,38 @@ def test_parse_remind_in_short_hours() -> None:
     base = datetime(2026, 5, 28, 12, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     result = parse_remind_in("1h", now=base)
     assert result == 1779944400000
+
+
+def test_current_cookie_header_prefers_scoped_auth_cookie() -> None:
+    """Cookie export should prefer server-refreshed scoped auth cookies."""
+
+    client = XiaomiClient(AuthConfig(cookie="serviceToken=old-token; i.mi.com_slh=old-slh; userId=1"))
+    try:
+        client._client.cookies.set("serviceToken", "new-token", domain=".i.mi.com", path="/")
+        client._client.cookies.set("i.mi.com_slh", "new-slh", domain=".i.mi.com", path="/")
+        client._client.cookies.set("userId", "1", domain=".mi.com", path="/")
+        header = client.current_cookie_header()
+    finally:
+        client.close()
+
+    assert "serviceToken=new-token" in header
+    assert "i.mi.com_slh=new-slh" in header
+    assert "serviceToken=old-token" not in header
+
+
+def test_refresh_auth_dedupes_rotated_auth_cookies() -> None:
+    """Auth refresh helpers should clear stale raw-input duplicates."""
+
+    client = XiaomiClient(AuthConfig(cookie="serviceToken=old-token; i.mi.com_slh=old-slh; userId=1"))
+    try:
+        client._client.cookies.set("serviceToken", "new-token", domain=".i.mi.com", path="/")
+        client._client.cookies.set("i.mi.com_slh", "new-slh", domain=".i.mi.com", path="/")
+        client._client.cookies.set("userId", "1", domain=".mi.com", path="/")
+        client._dedupe_auth_cookies()
+        remaining = {(cookie.name, cookie.domain, cookie.value) for cookie in client._client.cookies.jar}
+    finally:
+        client.close()
+
+    assert ("serviceToken", "", "old-token") not in remaining
+    assert ("i.mi.com_slh", "", "old-slh") not in remaining
+    assert ("serviceToken", ".i.mi.com", "new-token") in remaining

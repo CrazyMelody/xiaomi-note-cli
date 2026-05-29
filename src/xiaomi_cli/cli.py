@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Any
 import json
 import time
+from time import sleep
 
 from rich import print
 from rich.console import Console
@@ -80,6 +81,77 @@ def auth_show_path() -> None:
     """Show the default config path."""
 
     print(str(DEFAULT_CONFIG_FILE))
+
+
+@auth_app.command("refresh")
+def auth_refresh(
+    sync_tag: Annotated[str | None, typer.Option(help="可选的 note syncTag，用于减少返回体")] = None,
+    save: Annotated[bool, typer.Option(help="是否回写默认配置文件")] = True,
+    cookie: CookieOption = None,
+    cookie_file: CookieFileOption = None,
+    user_agent: UserAgentOption = None,
+) -> None:
+    """Refresh auth cookies through a note sync heartbeat request."""
+
+    client = _client_from_options(cookie=cookie, cookie_file=cookie_file, user_agent=user_agent)
+    try:
+        refreshed_cookie, next_sync_tag = client.refresh_auth(sync_tag=sync_tag)
+    finally:
+        client.close()
+
+    if save:
+        output = save_auth_config(refreshed_cookie, user_agent=user_agent)
+        print(f"[green]已刷新并保存 Cookie[/green]：{output}")
+    print_json(
+        {
+            "cookie": refreshed_cookie,
+            "nextSyncTag": next_sync_tag,
+            "saved": save,
+        }
+    )
+
+
+@auth_app.command("keepalive")
+def auth_keepalive(
+    interval_seconds: Annotated[int, typer.Option(help="续期间隔，单位秒")] = 25,
+    max_rounds: Annotated[int | None, typer.Option(help="最多执行轮数；不传则持续运行")] = None,
+    sync_tag: Annotated[str | None, typer.Option(help="初始 note syncTag，可选")] = None,
+    save_every: Annotated[int, typer.Option(help="每多少轮回写一次配置")] = 1,
+    cookie: CookieOption = None,
+    cookie_file: CookieFileOption = None,
+    user_agent: UserAgentOption = None,
+) -> None:
+    """Keep Xiaomi web cookies fresh in a pure script loop."""
+
+    if interval_seconds <= 0:
+        raise typer.BadParameter("`--interval-seconds` 必须大于 0。")
+    if max_rounds is not None and max_rounds <= 0:
+        raise typer.BadParameter("`--max-rounds` 必须大于 0。")
+    if save_every <= 0:
+        raise typer.BadParameter("`--save-every` 必须大于 0。")
+
+    client = _client_from_options(cookie=cookie, cookie_file=cookie_file, user_agent=user_agent)
+    current_sync_tag = sync_tag
+    round_index = 0
+    try:
+        while max_rounds is None or round_index < max_rounds:
+            round_index += 1
+            refreshed_cookie, current_sync_tag = client.refresh_auth(sync_tag=current_sync_tag)
+            if round_index % save_every == 0:
+                save_auth_config(refreshed_cookie, user_agent=user_agent)
+            print_json(
+                {
+                    "round": round_index,
+                    "nextSyncTag": current_sync_tag,
+                    "saved": round_index % save_every == 0,
+                    "cookie": refreshed_cookie,
+                }
+            )
+            if max_rounds is not None and round_index >= max_rounds:
+                break
+            sleep(interval_seconds)
+    finally:
+        client.close()
 
 
 @note_app.command("list")
