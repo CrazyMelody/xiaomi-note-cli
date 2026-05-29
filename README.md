@@ -94,6 +94,8 @@ uv run xiaomi-cli auth show-path
 
 ```bash
 uv run xiaomi-cli auth save
+uv run xiaomi-cli auth refresh
+uv run xiaomi-cli auth keepalive --interval-seconds 25
 uv run xiaomi-cli ... --cookie '...'
 uv run xiaomi-cli ... --cookie-file ./xiaomi.cookie
 ```
@@ -161,7 +163,10 @@ Agent 在执行更新或删除前，应先确保控制字段是最新的：
 如果 Agent 遇到这些情况，应按下面处理：
 
 - `401 Unauthorized`
-  - 说明 Cookie 失效或缺失，应要求用户刷新登录态
+  - 说明 Cookie 失效或缺失，应优先尝试：
+    - `uv run xiaomi-cli auth refresh`
+    - 如果需要长期保活：`uv run xiaomi-cli auth keepalive --interval-seconds 25`
+  - 如果刷新后仍失败，再要求用户重新登录并更新 Cookie
 - note delete 冲突
   - 重新读取最新 `tag` 后重试
 - todo update/delete 冲突
@@ -179,6 +184,15 @@ Agent 在执行更新或删除前，应先确保控制字段是最新的：
 
 当前版本为了保持 CLI 可独立运行，使用浏览器里复制出来的完整 Cookie header。
 
+另外，当前版本已经支持纯脚本续期 Cookie：
+
+- `auth refresh`
+  - 通过 `note sync` 心跳请求触发服务端返回新的 Cookie
+  - 适合单次刷新并回写本地配置
+- `auth keepalive`
+  - 按固定间隔持续续期
+  - 适合长时间运行脚本前先保活登录态
+
 推荐方式：
 
 1. 打开已登录的小米云笔记页面：`https://i.mi.com/note/h5#/`
@@ -190,6 +204,30 @@ Agent 在执行更新或删除前，应先确保控制字段是最新的：
 
 ```bash
 uv run xiaomi-cli auth save
+```
+
+如果已经有可用 Cookie，也可以直接做一次续期并保存：
+
+```bash
+uv run xiaomi-cli auth refresh
+```
+
+如果只想输出刷新后的 Cookie，不回写配置：
+
+```bash
+uv run xiaomi-cli auth refresh --no-save --cookie 'serviceToken=...; userId=...'
+```
+
+如果需要持续保活：
+
+```bash
+uv run xiaomi-cli auth keepalive --interval-seconds 25
+```
+
+限制轮数的保活示例：
+
+```bash
+uv run xiaomi-cli auth keepalive --interval-seconds 25 --max-rounds 10
 ```
 
 也可以临时传参：
@@ -209,6 +247,11 @@ uv run xiaomi-cli note list --cookie-file ./xiaomi.cookie
 ```bash
 uv run xiaomi-cli auth show-path
 ```
+
+续期说明：
+
+- 当前验证结果表明，Cookie 续期来自服务端响应下发，而不是前端 JS 主动写 `document.cookie`
+- CLI 在续期后会自动去重同名 Cookie，优先保留服务端返回的新值
 
 ## 笔记命令
 
